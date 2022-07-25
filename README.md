@@ -46,21 +46,21 @@ registry_password
 RHREGUN (RH Registry Username)
 RHREGPW (RH Registry Password)
 
-## Example Install Variables:
+## Example Install Scenarios:
 
-<u>Single Node Tower v3.8.6-2:</u>
+### Single Node Tower v3.8.6-2:
 ansible-playbook tower-aap-install.yaml -e "primary_node=tower386.fqdn ver=3.8.6-2"
 
-<u>Single Node AAP 2.2.0-7:</u>
+### Single Node AAP 2.2.0-7:
 ansible-playbook tower-aap-install.yaml -e "primary_node=aap220.fqdn ver=2.2.0-7"
 
-<u>3 Node Cluster Tower 3.8.6-2:</u>
+### 3 Node Cluster Tower 3.8.6-2:
 ansible-playbook tower-aap-install.yaml -e "primary_node=tower386n1.fqdn secondary_node=tower386n2.fqdn tertiary_node=tower386n3.fqdn db_node=db386.fqdn ver=3.8.6-2"
 
-<u>Single Node Automation Hub 1.2.7-2:</u>
+### Single Node Automation Hub 1.2.7-2:
 ansible-playbook tower-aap-install.yaml -e "ah_node=ah127.fqdn ver=1.2.7-2"
 
-<u>Single Node Automation Hub w/External DB 1.2.7-2:</u>
+### Single Node Automation Hub w/External DB 1.2.7-2:
 ansible-playbook tower-aap-install.yaml -e "ah_node=ah127.fqdn db_node=db127.fqdn ver=1.2.7-2"
 
 ## Install Notes:
