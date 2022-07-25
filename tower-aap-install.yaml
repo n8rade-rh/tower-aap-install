@@ -1,0 +1,457 @@
+---
+
+# Setting up inventory based on provided host variables.
+
+- hosts: local
+  tasks:
+
+    - name: Add nodes to setup group. Setup group is used for setup steps needed specific to environment.
+      ansible.builtin.add_host:
+        name: "{{ item }}"
+        groups: setup
+      with_items:
+        - "{{ primary_node | default([]) }}"
+        - "{{ secondary_node | default([]) }}"
+        - "{{ tertiary_node | default([]) }}"
+        - "{{ db_node | default([]) }}"
+        - "{{ ah_node | default([]) }}"
+
+    - name: Add primary_node node to main group.
+      ansible.builtin.add_host:
+        name: "{{ primary_node }}"
+        groups: main
+      when:
+        - primary_node is defined
+
+    - name: Add ah_node node to main group.
+      ansible.builtin.add_host:
+        name: "{{ ah_node }}"
+        groups: main
+      when:
+        - ah_node is defined
+        - primary_node is undefined
+
+# Setup steps needed as prerequisites. Firewalld steps are specific to my environment.
+
+- hosts: setup
+  tasks:
+
+    - name: Add primary_node source on other nodes in setup group when cluster or full architecture.
+      ansible.posix.firewalld: 
+        source: "{{ hostvars[primary_node].ansible_facts.default_ipv4.address }}" 
+        permanent: yes
+        zone: trusted
+        state: enabled
+        immediate: yes
+      when:
+        - primary_node is defined
+        - secondary_node is defined or tertiary_node is defined or ah_node is defined or db_node is defined
+
+    - name: Add ah_node source on other nodes in setup group when cluster or full architecture.
+      ansible.posix.firewalld: 
+        source: "{{ hostvars[ah_node].ansible_facts.default_ipv4.address }}" 
+        permanent: yes
+        zone: trusted
+        state: enabled
+        immediate: yes
+      when:
+        - ah_node is defined
+        - primary_node is undefined
+        - db_node is defined
+
+    - name: Register with subscription-manager using environment variables.
+      community.general.redhat_subscription:
+        state: present
+        username: "{{ lookup('env','RHDEVUN') }}"
+        password: "{{ lookup('env','RHDEVPW') }}"
+        auto_attach: true
+      when:
+        - subscription_username is undefined
+        - subscription_password is undefined
+
+    - name: Register with subscription-manager using extra variables.
+      community.general.redhat_subscription:
+        state: present
+        username: "{{ subscription_username }}"
+        password: "{{ subscription_password }}"
+        auto_attach: true
+      when:
+        - subscription_username is defined
+        - subscription_password is defined
+
+# Start the main inventory editing steps.
+
+- hosts: main
+  tasks:
+
+# This one task is also specific to my environment.
+
+    - name: Copy over id_rsa so that this node can ssh to the ansible user.
+      ansible.builtin.copy:
+        src: /root/terraform-files/ansible-files/installs/id_rsa
+        dest: /home/ansible/.ssh/id_rsa
+        owner: ansible
+        group: ansible
+        mode: '0600'
+
+# Not currently setup to handle Tower versions 3.2.8 and below. I was only able to get 3.5.0-1+ working in my lab, but I believe 3.3.0-1 and beyond should work if given the correct environment.
+
+    - name: Set install_type to "tower" if not defined manually and ver is >= 3.3.0-1 but <= 3.8.6-2.
+      ansible.builtin.set_fact:
+        install_type: "tower"
+      when:
+        - ver is version('3.3.0-1', '>=')
+        - ver is version('3.8.6-2', '<=')
+        - install_type is undefined
+
+# Assuming any ver greater than the latest version of 2.2.0 will be for AAP (but not into one of the tower versions that should work.)
+
+    - name: Set install_type to "aap" if not defined manually and ver is >= 1.2.0-1 but < 3.3.0-1.
+      ansible.builtin.set_fact:
+        install_type: "aap"
+      when:
+        - ver is version('1.2.0-1', '>=')
+        - ver is version('3.3.0-1', '<=')
+        - install_type is undefined
+
+    - name: Fail if install_type not set at this point.
+      ansible.builtin.fail:
+        msg: install_type was not able to be set automatically based on the provided version. Please check the version used or set it manually.
+      when:
+        - install_type is undefined
+
+    - name: Download and unpack Tower tarball from the interwebs.
+      ansible.builtin.unarchive:
+        src: https://releases.ansible.com/ansible-tower/setup/ansible-tower-setup-{{ ver }}.tar.gz
+        dest: /root/
+        remote_src: yes
+      when:
+        - install_type == "tower" or install_type == "Tower"
+
+    - name: Rename Tower folders to maintain my sanity further along.
+      ansible.builtin.shell: mv /root/ansible-tower-setup-{{ ver }}/ /root/ansible-tower-aap-install/
+      when:
+        - install_type == "tower" or install_type == "Tower"
+
+# I downloaded all the AAP bundles locally. Unsure if there's another way to obtain these from a web location.
+
+    - name: Copy AAP Install tarball over to main node and unpack.
+      ansible.builtin.unarchive:
+        src: /mnt/aap/aap-bundles/ansible-automation-platform-setup-bundle-{{ ver }}.tar.gz
+        dest: /root/
+      when: 
+        - install_type == "aap" or install_type == "AAP"
+        - '"2.2.0" not in ver'
+
+# Version 2.2.0 seemed to introduce RHEL 8 and RHEL 9 specific bundles so I renamed them as such when I downloaded them.
+
+    - name: Copy AAP Install tarball specific to rhel version over to main node and unpack when version contains 2.2.0.
+      ansible.builtin.unarchive:
+        src: /mnt/aap/aap-bundles/ansible-automation-platform-setup-bundle-{{ ver }}-rhel{{ ansible_distribution_major_version }}.tar.gz
+        dest: /root/
+      when: 
+        - install_type == "aap" or install_type == "AAP"
+        - '"2.2.0" in ver'
+        - ansible_distribution_major_version == "8" or ansible_distribution_major_version == "9"
+
+    - name: Rename AAP folders to maintain my sanity further along.
+      ansible.builtin.shell: mv /root/ansible-automation-platform-setup-bundle-{{ ver }}/ /root/ansible-tower-aap-install/
+      when:
+        - install_type == "aap" or install_type == "AAP"
+        - ver is version('2.1.0-1', '>=') or ver is version('1.2.7-2', '<=')
+
+    - name: Rename the early access versions of AAP folders to maintain my sanity further along.
+      ansible.builtin.shell: mv /root/ansible-automation-platform-setup-bundle-{{ ver }}-early-access/ /root/ansible-tower-aap-install/
+      when:
+        - install_type == "aap" or install_type == "AAP"
+        - ver is version('2.0.0-1', '>=')
+        - ver is version('2.1.0-1', '<')
+
+# Inventory vars specific to my environment.
+
+    - name: Insert ansible vars needed for host connection.
+      ansible.builtin.blockinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        insertafter: ^\[all\:vars\]
+        block: |
+          ansible_port=5522 
+          ansible_user=ansible 
+          ansible_become=true 
+          ansible_ssh_common_args='-o StrictHostKeyChecking=no' 
+          ansible_ssh_private_key_file=/home/ansible/.ssh/id_rsa
+
+    - name: Set required_ram=1 so that no ram requirement is needed
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        insertafter: ^\[all\:vars\]
+        line: required_ram=1
+
+    - name: Set admin_password variable to redhat in inventory file no matter what
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^admin_password=
+        line: admin_password='redhat'
+
+    - name: Set pg_password variable to redhat in inventory file no matter what
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^pg_password=
+        line: pg_password='redhat'
+
+    - name: Remove localhost host entry if it exists.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^localhost ansible_connection=local
+        state: absent
+
+    - name: Check for registry_url.
+      ansible.builtin.shell: grep "^registry_url=" /root/ansible-tower-aap-install/inventory
+      register: registryurl
+      ignore_errors: yes
+
+    - name: Check for registry_username.
+      ansible.builtin.shell: grep "^registry_username=" /root/ansible-tower-aap-install/inventory
+      register: registryun
+      ignore_errors: yes
+
+    - name: Check for registry_password.
+      ansible.builtin.shell: grep "^registry_password=" /root/ansible-tower-aap-install/inventory
+      register: registrypw
+      ignore_errors: yes
+
+# AAP 2.0.1 failed to install when registry_* variables weren't commented out and also not defined.
+
+    - name: Comment out registry_url when it exists and registry_username and registry_password are undefined.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^registry_url=
+        line: "#registry_url='registry.redhat.io'"
+      when:
+        - registryurl.rc == 0
+        - registry_username is undefined
+        - registry_password is undefined
+        - lookup('env','RHREGUN') | length == 0
+        - lookup('env','RHREGPW') | length == 0
+
+    - name: Comment out registry_username when it exists and is undefined.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^registry_username=
+        line: "#registry_username=''"
+        state: present
+      when:
+        - registryun.rc == 0
+        - registry_username is undefined
+        - lookup('env','RHREGUN') | length == 0
+
+    - name: Comment out registry_password when it exists and is undefined.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^registry_password=
+        line: "#registry_password=''"
+        state: present
+      when:
+        - registrypw.rc == 0
+        - registry_password is undefined
+        - lookup('env','RHREGPW') | length == 0
+
+    - name: Set registry_username when it exists and is defined by extra variable.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^registry_username=
+        line: registry_username='{{ registry_username }}'
+      when:
+        - registryun.rc == 0
+        - registry_username is defined
+
+    - name: Set registry_password when it exists and is defined by extra variable.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^registry_password=
+        line: registry_password='{{ registry_password }}'
+      when:
+        - registrypw.rc == 0
+        - registry_password is defined
+
+    - name: Set registry_username when it exists and is defined by environment variable.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^registry_username=
+        line: registry_username='{{ lookup('env','RHREGUN') }}'
+      when:
+        - registryun.rc == 0
+        - lookup('env','RHREGUN') | length > 0
+
+    - name: Set registry_password when it exists and is defined by environment variable.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^registry_password=
+        line: registry_password='{{ lookup('env','RHREGPW') }}'
+      when:
+        - registrypw.rc == 0
+        - lookup('env','RHREGPW') | length > 0
+
+    - name: Check for rabbitmq_password for older versions of Tower.
+      ansible.builtin.shell: grep "^rabbitmq_password=" /root/ansible-tower-aap-install/inventory
+      register: rabbitmq
+      ignore_errors: yes
+
+    - name: Set rabbitmq_password variable to redhat in inventory file when it exists
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^rabbitmq_password=
+        line: rabbitmq_password='redhat'
+      when:
+        - rabbitmq.rc == 0
+        - install_type == "tower" or install_type == "Tower"
+        
+#------------------------------------------------------------------#
+#-----------------Controller nodes inventory edit------------------#
+#------------------------------------------------------------------#
+
+    - name: Insert automationcontroller if single or full install for recent versions of aap.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        insertafter: ^\[automationcontroller\]
+        line: "{{ item }}"
+        state: present
+      with_items:
+        - "{{ tertiary_node | default([]) }}"
+        - "{{ secondary_node | default([]) }}"
+        - "{{ primary_node | default([]) }}"
+      when:
+        - install_type == "aap" or install_type == "AAP"
+        - ver is version('2.0.0-1', '>=')
+
+# Tower versions below 3.1.0 used [primary] header and some super early versions didn't have an inventory file. Will need more digging, but aren't supported by this for now.
+
+    - name: Insert tower hostname if single or full install for some versions of aap and most versions of tower.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        insertafter: ^\[tower\]
+        line: "{{ item }}"
+        state: present
+      with_items:
+        - "{{ tertiary_node | default([]) }}"
+        - "{{ secondary_node | default([]) }}"
+        - "{{ primary_node | default([]) }}"
+      when:
+        - ((install_type == "aap" or install_type == "AAP") and ver is version('1.2.7-2', '<=')) or ((install_type == "tower" or install_type == "Tower") and ver is version('3.1.0', '>='))
+
+#------------------------------------------------------------------#
+#-----------------external databaste inventory edit----------------#
+#------------------------------------------------------------------#
+
+    - name: Insert database entry if db_node is defined.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        insertafter: ^\[database\]
+        line: "{{ db_node }}"
+        state: present
+      when:
+        - db_node is defined
+        - primary_node is defined or ah_node is defined
+
+    - name: Set pg_host variable if db_node is defined.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^pg_host=
+        line: pg_host='{{ db_node }}'
+      when:
+        - db_node is defined
+        - primary_node is defined or ah_node is defined
+
+    - name: Set pg_port variable if db_node is defined.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^pg_port=
+        line: pg_port='5432'
+      when:
+        - db_node is defined
+        - primary_node is defined or ah_node is defined
+
+#------------------------------------------------------------------#
+#-------------------automation hub inventory edit------------------#
+#------------------------------------------------------------------#
+
+    - name: Insert automationhub if ah or full architecture
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        insertafter: ^\[automationhub\]
+        line: "{{ ah_node }}"
+        state: present
+      when:
+        - install_type == "aap" or install_type == "AAP"
+        - ah_node is defined
+
+    - name: Set automationhub_admin_password variable if full or ah architectures.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^automationhub_admin_password=
+        line: automationhub_admin_password='redhat'
+      when:
+        - install_type == "aap" or install_type == "AAP"
+        - ah_node is defined
+
+    - name: Set automationhub_pg_host variable if full or ah architectures and db_node is defined.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^automationhub_pg_host=
+        line: automationhub_pg_host='{{ db_node }}'
+      when:
+        - install_type == "aap" or install_type == "AAP"
+        - ah_node is defined
+        - db_node is defined
+
+    - name: Set automationhub_pg_host variable if full architecture and db_node is undefined.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^automationhub_pg_host=
+        line: automationhub_pg_host='{{ primary_node }}'
+      when:
+        - install_type == "aap" or install_type == "AAP"
+        - ah_node is defined
+        - primary_node is defined
+        - db_node is undefined
+
+    - name: Set automationhub_pg_port variable if full or ah architectures.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^automationhub_pg_port=
+        line: automationhub_pg_port='5432'
+      when:
+        - install_type == "aap" or install_type == "AAP"
+        - ah_node is defined
+
+    - name: Set automationhub_pg_password variable if full or ah architectures.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^automationhub_pg_password=
+        line: automationhub_pg_password='redhat'
+      when:
+        - install_type == "aap" or install_type == "AAP"
+        - ah_node is defined
+
+#------------------------------------------------------------------#
+
+    - name: Run setup.sh
+      ansible.builtin.shell: ./setup.sh
+      args:
+        chdir: /root/ansible-tower-aap-install/
+
+    - name: Hit the API of the primary_node.
+      ansible.builtin.uri:
+        url: https://{{ primary_node }}/api/v2/ping/
+        method: GET
+        validate_certs: no
+      register: ping_output
+      when: 
+        - primary_node is defined
+
+    - name: Print API Output
+      ansible.builtin.debug:
+        var: ping_output.json
+      when: 
+        - primary_node is defined
+
+...
