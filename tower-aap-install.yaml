@@ -128,6 +128,16 @@
       when:
         - install_type == "tower" or install_type == "Tower"
 
+    - name: Check for custom installer folder existence.
+      ansible.builtin.stat:
+        path: "/root/ansible-tower-aap-install/"
+      register: install_dir
+
+    - name: Move customer installer folder if it exists. Necessary if upgrading.
+      ansible.builtin.shell: mv /root/ansible-tower-aap-install/ /root/old-ansible-tower-aap-install/
+      when:
+        - install_dir.stat.exists
+
     - name: Rename Tower folders to maintain my sanity further along.
       ansible.builtin.shell: mv /root/ansible-tower-setup-{{ ver }}/ /root/ansible-tower-aap-install/
       when:
