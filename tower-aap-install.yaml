@@ -133,7 +133,7 @@
         path: "/root/ansible-tower-aap-install/"
       register: install_dir
 
-    - name: Move customer installer folder if it exists. Necessary if upgrading.
+    - name: Move custom installer folder if it exists. Necessary if upgrading.
       ansible.builtin.shell: mv /root/ansible-tower-aap-install/ /root/old-ansible-tower-aap-install/
       when:
         - install_dir.stat.exists
