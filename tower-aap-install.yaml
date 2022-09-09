@@ -1,6 +1,6 @@
 ---
 
-# Setting up inventory based on provided host variables.
+# Setting up in-memory inventory based on provided host variables.
 
 - hosts: local
   tasks:
@@ -31,7 +31,15 @@
         - ah_node is defined
         - primary_node is undefined
 
-# Setup steps needed as prerequisites. Firewalld steps are specific to my environment.
+- hosts: main
+  tasks:
+
+    - name: Check for custom installer folder existence.
+      ansible.builtin.stat:
+        path: "/root/ansible-tower-aap-install/"
+      register: install_dir
+
+# Setup steps needed as prerequisites. Firewalld steps are specific to my environment so please modify.
 
 - hosts: setup
   tasks:
@@ -62,12 +70,14 @@
     - name: Register with subscription-manager using environment variables.
       community.general.redhat_subscription:
         state: present
-        username: "{{ lookup('env','RHDEVUN') }}"
-        password: "{{ lookup('env','RHDEVPW') }}"
+        username: "{{ lookup('env','RHSUBUN') }}"
+        password: "{{ lookup('env','RHSUBPW') }}"
         auto_attach: true
       when:
         - subscription_username is undefined
         - subscription_password is undefined
+        - lookup('env','RHSUBUN') | length > 0
+        - lookup('env','RHSUBPW') | length > 0
 
     - name: Register with subscription-manager using extra variables.
       community.general.redhat_subscription:
@@ -78,21 +88,21 @@
       when:
         - subscription_username is defined
         - subscription_password is defined
+        - lookup('env','RHSUBUN') | length == 0
+        - lookup('env','RHSUBPW') | length == 0
+
+    - name: When upgrading and custom install folder exists on main, comment out exclude entry in yum.conf on all nodes.
+      ansible.builtin.lineinfile:
+        path: /etc/yum.conf
+        regexp: ^exclude=
+        state: absent
+      when:
+        - install_dir.stat.exists
 
 # Start the main inventory editing steps.
 
 - hosts: main
   tasks:
-
-# This one task is also specific to my environment.
-
-    - name: Copy over id_rsa so that this node can ssh to the ansible user.
-      ansible.builtin.copy:
-        src: /root/terraform-files/ansible-files/installs/id_rsa
-        dest: /home/ansible/.ssh/id_rsa
-        owner: ansible
-        group: ansible
-        mode: '0600'
 
 # Not currently setup to handle Tower versions 3.2.8 and below. I was only able to get 3.5.0-1+ working in my lab, but I believe 3.3.0-1 and beyond should work if given the correct environment.
 
@@ -128,12 +138,7 @@
       when:
         - install_type == "tower" or install_type == "Tower"
 
-    - name: Check for custom installer folder existence.
-      ansible.builtin.stat:
-        path: "/root/ansible-tower-aap-install/"
-      register: install_dir
-
-    - name: Move custom installer folder if it exists. Necessary if upgrading.
+    - name: Move customer installer folder if it exists. Necessary if upgrading.
       ansible.builtin.shell: mv /root/ansible-tower-aap-install/ /root/old-ansible-tower-aap-install/
       when:
         - install_dir.stat.exists
@@ -230,18 +235,23 @@
       ignore_errors: yes
 
 # AAP 2.0.1 failed to install when registry_* variables weren't commented out and also not defined.
+# AAP 2.1.1-2 failed when registry_url was commented out. Needed to be set registry_url to a fake url to proceed.
 
-    - name: Comment out registry_url when it exists and registry_username and registry_password are undefined.
+    - name: Set registry_url to a fake URL when it exists and nothing is defined to set any registry_ variables. Not recommended.
       ansible.builtin.lineinfile:
         path: /root/ansible-tower-aap-install/inventory
         regexp: ^registry_url=
-        line: "#registry_url='registry.redhat.io'"
+        line: "registry_url='notarealurl.com'"
       when:
         - registryurl.rc == 0
         - registry_username is undefined
         - registry_password is undefined
+        - subscription_username is undefined
+        - subscription_password is undefined
         - lookup('env','RHREGUN') | length == 0
         - lookup('env','RHREGPW') | length == 0
+        - lookup('env','RHSUBUN') | length == 0
+        - lookup('env','RHSUBPW') | length == 0
 
     - name: Comment out registry_username when it exists and is undefined.
       ansible.builtin.lineinfile:
@@ -252,7 +262,9 @@
       when:
         - registryun.rc == 0
         - registry_username is undefined
+        - subscription_username is undefined
         - lookup('env','RHREGUN') | length == 0
+        - lookup('env','RHSUBUN') | length == 0
 
     - name: Comment out registry_password when it exists and is undefined.
       ansible.builtin.lineinfile:
@@ -263,9 +275,61 @@
       when:
         - registrypw.rc == 0
         - registry_password is undefined
+        - subscription_password is undefined
+        - lookup('env','RHREGPW') | length == 0
+        - lookup('env','RHSUBPW') | length == 0
+
+# Set registry_username and registry_password to subscription manager username/password by default unless otherwise defined. If the registry specific envrionment/extra variables are defined, it should instead use those.
+
+    - name: Set registry_username when it exists and is defined by subscription_username extra variable.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^registry_username=
+        line: registry_username='{{ subscription_username }}'
+      when:
+        - registryun.rc == 0
+        - registry_username is undefined
+        - subscription_username is defined
+        - lookup('env','RHSUBUN') | length == 0
+        - lookup('env','RHREGUN') | length == 0
+
+    - name: Set registry_password when it exists and is defined by subscription_password extra variable.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^registry_password=
+        line: registry_password='{{ subscription_password }}'
+      when:
+        - registrypw.rc == 0
+        - registry_password is undefined
+        - subscription_password is defined
+        - lookup('env','RHSUBPW') | length == 0
         - lookup('env','RHREGPW') | length == 0
 
-    - name: Set registry_username when it exists and is defined by extra variable.
+    - name: Set registry_username when it exists and is defined by RHSUBUN environment variable.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^registry_username=
+        line: registry_username='{{ lookup('env','RHSUBUN') }}'
+      when:
+        - registryun.rc == 0
+        - registry_username is undefined
+        - subscription_username is undefined
+        - lookup('env','RHSUBUN') | length > 0
+        - lookup('env','RHREGUN') | length == 0
+
+    - name: Set registry_password when it exists and is defined by RHSUBPW environment variable.
+      ansible.builtin.lineinfile:
+        path: /root/ansible-tower-aap-install/inventory
+        regexp: ^registry_password=
+        line: registry_password='{{ lookup('env','RHSUBPW') }}'
+      when:
+        - registrypw.rc == 0
+        - registry_password is undefined
+        - subscription_password is undefined
+        - lookup('env','RHSUBPW') | length > 0
+        - lookup('env','RHREGUN') | length == 0
+
+    - name: Set registry_username when it exists and is defined by registry_username extra variable.
       ansible.builtin.lineinfile:
         path: /root/ansible-tower-aap-install/inventory
         regexp: ^registry_username=
@@ -273,8 +337,9 @@
       when:
         - registryun.rc == 0
         - registry_username is defined
+        - lookup('env','RHREGUN') | length == 0
 
-    - name: Set registry_password when it exists and is defined by extra variable.
+    - name: Set registry_password when it exists and is defined by registry_password extra variable.
       ansible.builtin.lineinfile:
         path: /root/ansible-tower-aap-install/inventory
         regexp: ^registry_password=
@@ -282,23 +347,26 @@
       when:
         - registrypw.rc == 0
         - registry_password is defined
+        - lookup('env','RHREGPW') | length == 0
 
-    - name: Set registry_username when it exists and is defined by environment variable.
+    - name: Set registry_username when it exists and is defined by RHREGUN environment variable.
       ansible.builtin.lineinfile:
         path: /root/ansible-tower-aap-install/inventory
         regexp: ^registry_username=
         line: registry_username='{{ lookup('env','RHREGUN') }}'
       when:
         - registryun.rc == 0
+        - registry_username is undefined
         - lookup('env','RHREGUN') | length > 0
 
-    - name: Set registry_password when it exists and is defined by environment variable.
+    - name: Set registry_password when it exists and is defined by RHREGPW environment variable.
       ansible.builtin.lineinfile:
         path: /root/ansible-tower-aap-install/inventory
         regexp: ^registry_password=
         line: registry_password='{{ lookup('env','RHREGPW') }}'
       when:
         - registrypw.rc == 0
+        - registry_password is undefined
         - lookup('env','RHREGPW') | length > 0
 
     - name: Check for rabbitmq_password for older versions of Tower.
@@ -463,5 +531,54 @@
         var: ping_output.json
       when: 
         - primary_node is defined
+
+# Setup yum.conf exclusions per https://access.redhat.com/solutions/4566711
+
+- hosts: setup
+  tasks:
+
+    - name: Setup yum.conf exclude list on RHEL 9 for AAP 2.2
+      ansible.builtin.lineinfile:
+        path: /etc/yum.conf
+        insertafter: ^\[main\]
+        line: exclude=postgresql* nginx* redis* ansible ansible-automation-platform-common ansible-automation-platform-installer ansible-automation-platform-selinux ansible-builder ansible-core ansible-lint ansible-navigator ansible-runner ansible-test automation-controller automation-controller-cli automation-controller-server automation-controller-ui automation-controller-venv-tower automation-hub automation-services-catalog pulpcore-selinux python3-aiodns python3-aiofiles python3-aiohttp python3-aioredis python3-aiosignal python3-ansible-builder python3-ansible-compat python3-ansible-runner python3-asgiref python3-async-lru python3-async-timeout python3-asyncio-throttle python3-attrs python3-backoff python3-bindep python3-bleach python3-bleach-allowlist python3-bracex python3-cchardet python3-certifi python3-cffi python3-charset-normalizer python3-click python3-commonmark python3-croniter python3-daemon python3-defusedxml python3-diff-match-patch python3-distro python3-django python3-django-automated-logging python3-django-cors-headers python3-django-currentuser python3-django-environ python3-django-filter python3-django-guardian python3-django-guid python3-django-import-export python3-django-ipware python3-django-lifecycle python3-django-picklefield python3-django-prometheus python3-django-rq python3-django-taggit python3-djangorestframework python3-djangorestframework-queryfields python3-docutils python3-drf-access-policy python3-drf-extensions python3-drf-nested-routers python3-drf-spectacular python3-dynaconf python3-ecdsa python3-enrich python3-et-xmlfile python3-flake8 python3-frozenlist python3-future python3-galaxy-importer python3-galaxy-ng python3-gitdb python3-gitpython python3-gnupg python3-gunicorn python3-idna python3-idna-ssl python3-importlib-metadata python3-inflection python3-insights-analytics-collector python3-jinja2 python3-jose python3-lockfile python3-markdown python3-markuppy python3-markupsafe python3-marshmallow python3-mccabe python3-multidict python3-oauthlib python3-odfpy python3-onigurumacffi python3-openpyxl python3-packaging python3-parsley python3-pathspec python3-pbr python3-pillow python3-prometheus-client python3-psycopg2 python3-pulp-ansible python3-pulp-container python3-pulpcore python3-pyOpenSSL python3-pycares python3-pycodestyle python3-pycparser python3-pycryptodomex python3-pydantic python3-pyflakes python3-pygments python3-pygtrie python3-pyjwkest python3-pyjwt python3-python3-openid python3-pytz python3-redis python3-requests python3-requirements-parser python3-rich python3-rq python3-rq-scheduler python3-rsa python3-ruamel-yaml python3-ruamel-yaml-clib python3-semantic-version python3-six python3-smmap python3-social-auth-app-django python3-social-auth-core python3-sqlparse python3-subprocess-tee python3-tablib python3-typing-extensions python3-uritemplate python3-url-normalize python3-urllib3 python3-urlman python3-wcmatch python3-webencodings python3-whitenoise python3-xlrd python3-xlwt python3-yarl python3-zipp receptor receptorctl sshpass supervisor yamllint
+      when:
+        - '"2.2." in ver'
+        - ansible_distribution_major_version == "9"
+
+    - name: Setup yum.conf exclude list on RHEL 8 for AAP 2.2
+      ansible.builtin.lineinfile:
+        path: /etc/yum.conf
+        insertafter: ^\[main\]
+        line: exclude=postgresql* nginx* redis* ansible ansible-automation-platform-common ansible-automation-platform-installer ansible-automation-platform-selinux ansible-builder ansible-core ansible-lint ansible-navigator ansible-runner ansible-test ansible-test automation-controller automation-controller-cli automation-controller-server automation-controller-ui automation-controller-venv-tower automation-hub automation-services-catalog dumb-init helm oniguruma oniguruma-devel openshift-clients pulpcore-selinux python39-aiodns python39-aiofiles python39-aiohttp python39-aioredis python39-aiosignal python39-ansible-builder python39-ansible-compat python39-ansible-pylibssh python39-ansible-runner python39-asgiref python39-async-lru python39-async-timeout python39-asyncio-throttle python39-attrs python39-azure-core python39-azure-storage-blob python39-backoff python39-bindep python39-bleach python39-bleach-allowlist python39-boto3 python39-botocore python39-bracex python39-brotli python39-cchardet python39-certifi-20 python39-cffi python39-charset-normalizer python39-click python39-commonmark python39-croniter python39-cryptography python39-daemon python39-dateutil python39-defusedxml python39-diff-match-patch-20200713 python39-distro python39-django python39-django-automated-logging python39-django-cors-headers python39-django-currentuser python39-django-environ python39-django-filter python39-django-guardian python39-django-guid python39-django-import-export python39-django-ipware python39-django-lifecycle python39-django-picklefield python39-django-prometheus python39-django-rq python39-django-storages python39-django-taggit python39-djangorestframework python39-djangorestframework-queryfields python39-docutils python39-drf-access-policy python39-drf-extensions python39-drf-nested-routers python39-drf-spectacular python39-dynaconf python39-ecdsa python39-enrich python39-et-xmlfile python39-flake8 python39-frozenlist python39-future python39-galaxy-importer python39-galaxy-ng python39-gitdb python39-gitpython python39-gnupg python39-gunicorn python39-idna python39-idna-ssl python39-importlib-metadata python39-inflection python39-insights-analytics-collector python39-isodate python39-jinja2 python39-jmespath python39-jose python39-jsonschema python39-lockfile python39-markdown python39-markuppy python39-markupsafe python39-marshmallow python39-mccabe python39-msrest python39-multidict python39-oauthlib python39-odfpy python39-onigurumacffi python39-openpyxl python39-packaging python39-parsley python39-pathspec python39-pbr python39-pexpect python39-pillow python39-prometheus-client python39-psycopg2 python39-ptyprocess python39-pulp-ansible python39-pulp-container python39-pulpcore python39-pyOpenSSL python39-pyasn1 python39-pyasn1-modules python39-pycares python39-pycodestyle python39-pycparser python39-pycryptodomex python39-pydantic python39-pyflakes python39-pygments python39-pygtrie python39-pyjwkest python39-pyjwt python39-pyparsing python39-pyrsistent python39-python3-openid python39-pytz python39-redis python39-requests python39-requests-oauthlib python39-requirements-parser python39-resolvelib python39-rich python39-rq python39-rq-scheduler python39-rsa python39-ruamel-yaml python39-ruamel-yaml-clib python39-s3transfer python39-semantic-version python39-six python39-smmap python39-social-auth-app-django python39-social-auth-core python39-sqlparse python39-subprocess-tee python39-tablib python39-typing-extensions python39-uritemplate python39-url-normalize python39-urllib3 python39-urlman python39-wcmatch python39-webencodings python39-whitenoise python39-xlrd python39-xlwt python39-yarl python39-zipp receptor receptorctl sshpass supervisor yamllint
+      when:
+        - '"2.2." in ver'
+        - ansible_distribution_major_version == "8"
+
+    - name: Setup yum.conf exclude list for AAP 2.1
+      ansible.builtin.lineinfile:
+        path: /etc/yum.conf
+        insertafter: ^\[main\]
+        line: exclude=postgresql* nginx* redis* ansible ansible-builder ansible-core ansible-lint ansible-navigator ansible-runner ansible-test automation-controller automation-controller-cli automation-controller-server automation-controller-setup automation-controller-ui automation-controller-venv-tower automation-hub dumb-init helm helm-redistributable oniguruma oniguruma-devel openshift-clients openshift-clients-redistributable pulpcore-selinux python38-aiodns python38-aiofiles python38-aiohttp python38-aioredis python38-ansible-builder python38-ansible-runner python38-asgiref python38-asyncio-throttle python38-async-lru python38-async-timeout python38-attrs python38-azure-core python38-azure-storage-blob python38-backoff python38-bindep python38-bleach python38-bleach-allowlist python38-boto3 python38-botocore python38-bracex python38-certifi python38-click python38-colorama python38-commonmark python38-daemon python38-dataclasses python38-dateutil python38-defusedxml python38-diff-match-patch python38-distro python38-django python38-django-automated-logging python38-django-currentuser python38-django-filter python38-django-guardian python38-django-guid python38-django-import-export python38-django-ipware python38-django-lifecycle python38-django-picklefield python38-django-prometheus python38-djangorestframework python38-djangorestframework-queryfields python38-django-storages python38-docutils python38-drf-access-policy python38-drf-nested-routers python38-drf-spectacular python38-dynaconf python38-ecdsa python38-enrich python38-et-xmlfile python38-flake8 python38-future python38-galaxy-importer python38-galaxy-ng python38-gnupg python38-gunicorn python38-idna-ssl python38-importlib-metadata python38-importlib-resources python38-inflection python38-isodate python38-jmespath python38-jsonschema python38-lockfile python38-markdown python38-markuppy python38-marshmallow python38-mccabe python38-msrest python38-multidict python38-oauthlib python38-odfpy python38-onigurumacffi python38-openpyxl python38-packaging python38-parsley python38-pbr python38-pexpect python38-pip python38-pip-wheel python38-prometheus-client python38-psycopg2 python38-ptyprocess python38-pulp-ansible python38-pulp-container python38-pulpcore python38-pycares python38-pycodestyle python38-pycryptodomex python38-pyflakes python38-pygments python38-pygtrie python38-pyjwkest python38-pyjwt python38-pyOpenSSL python38-pyparsing python38-pyrsistent python38-python3-openid python38-redis python38-requests python38-requests-oauthlib python38-requirements-parser python38-resolvelib python38-rich python38-rq python38-ruamel-yaml python38-ruamel-yaml-clib python38-s3transfer python38-semantic-version python38-social-auth-app-django python38-social-auth-core python38-sqlparse python38-tablib python38-tenacity python38-typing-extensions python38-uritemplate python38-urlman python38-url-normalize python38-wcmatch python38-webencodings python38-whitenoise python38-xlrd python38-xlwt python38-yarl python38-zipp python3-meld3 python-meld3 receptor receptorctl rhc-catalog-worker sshpass supervisor tini
+      when:
+        - '"2.1." in ver'
+
+    - name: Setup yum.conf exclude list for AAP 1.2 or Tower 3.8
+      ansible.builtin.lineinfile:
+        path: /etc/yum.conf
+        insertafter: ^\[main\]
+        line: exclude=postgresql* nginx* redis* ansible-lint automation-hub pulpcore-selinux python3-aiodns python3-aiofiles python3-aiohttp python3-ansible-builder python3-async-timeout python3-attrs python3-backoff python3-bleach python3-bleach-allowlist python3-certifi python3-cffi python3-click python3-defusedxml python3-diff-match-patch python3-django python3-django-currentuser python3-django-filter python3-django-guardian python3-django-import-export python3-django-lifecycle python3-django-prometheus python3-djangorestframework python3-djangorestframework-queryfields python3-drf-access-policy python3-drf-nested-routers python3-drf-spectacular python3-dynaconf python3-et-xmlfile python3-flake8 python3-galaxy-importer python3-galaxy-ng python3-gnupg python3-gunicorn python3-idna python3-idna-ssl python3-importlib-metadata python3-inflection python3-jdcal python3-jinja2 python3-jsonschema python3-markdown python3-markuppy python3-markupsafe python3-mccabe python3-multidict python3-odfpy python3-openpyxl python3-packaging python3-prometheus-client python3-psycopg2 python3-pulp-ansible python3-pulpcore python3-pycares python3-pycodestyle python3-pycparser python3-pyflakes python3-pygtrie python3-pyOpenSSL python3-pyparsing python3-pyrsistent python3-pytz python3-pyyaml python3-redis python3-requests python3-requirements-parser python3-rq python3-ruamel-yaml python3-ruamel-yaml-clib python3-semantic-version python3-six python3-sqlparse python3-tablib python3-typing python3-typing-extensions python3-uritemplate python3-urllib3 python3-urlman python3-whitenoise python3-xlrd python3-xlwt python3-yarl python3-zipp
+      when:
+        - '"1.2." in ver or "3.8." in ver'
+        - ah_node is defined
+
+    - name: Setup yum.conf exclude list for AAP 1.2 or Tower 3.8
+      ansible.builtin.lineinfile:
+        path: /etc/yum.conf
+        insertafter: ^\[main\]
+        line: exclude=postgresql* nginx* redis* ansible-tower ansible-tower-isolated ansible-tower-server ansible-tower-ui ansible-tower-venv-ansible ansible-tower-venv-tower ansible ansible-runner ansible-test helm openshift-clients postgresql-upgrade96 python3-ansible-runner python3-daemon python3-lockfile python3-meld3 python3-pexpect python-meld3 sshpass supervisor
+      when:
+        - '"1.2." in ver or "3.8." in ver'
+        - primary_node is defined or secondary_node is defined or tertiary_node is defined
 
 ...

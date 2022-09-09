@@ -47,7 +47,7 @@ This should automatically be able to be set based on the version provided. Accep
 
 2. Registry Variables:
 
-There are also two ways to define these. As an extra var or environment variable.
+By default the registry_username and registry_password values will be set using the subscription_ values. Can also be defined as extra vars or environment variables.
 
 - Extra Vars:
 
@@ -80,7 +80,7 @@ ansible-playbook tower-aap-install.yaml -e "ah_node=ah127.fqdn db_node=db127.fqd
 
 ## Install Notes:
 
-1. There are quite a few setup steps specific to my environment. I tried to note them down with comments in the playbook.
+1. There are a few setup steps specific to my environment. I tried to note them down with comments in the playbook.
 2. I downloaded the Ansible Automation Platform Installer Bundles locally. Unsure of how to get them otherwise, but the source path (/mnt/aap/aap-bundles) in the playbook may need to be modified to reflect any custom paths used.
 3. I didn't have a RHEL image with an ansible version low enough to install Tower 3.3.0-1 or Tower 3.4.0-1. I believe I ran into ansible related errors when trying to install these on RHEL 7.4 with ansible core 2.12. I believe they should work based on the inventory though. The earliest version of Tower I tested for was 3.5.0-1 on RHEL 7.4.
 4. Any errors, ideas, or recommendations would be greatly appreciated!
