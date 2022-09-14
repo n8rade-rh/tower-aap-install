@@ -39,7 +39,10 @@
         path: "/root/ansible-tower-aap-install/"
       register: install_dir
 
-# Setup steps needed as prerequisites. Firewalld steps are specific to my environment so please modify.
+    - name: Check for old custom installer folder existence.
+      ansible.builtin.stat:
+        path: "/root/old-ansible-tower-aap-install/"
+      register: old_install_dir
 
 - hosts: setup
   tasks:
@@ -97,7 +100,10 @@
         regexp: ^exclude=
         state: absent
       when:
-        - install_dir.stat.exists
+        - hostvars[item].install_dir.stat.exists
+      with_items:
+        - "{{ primary_node | default([]) }}"
+        - "{{ ah_node | default([]) }}"
 
 # Start the main inventory editing steps.
 
@@ -130,6 +136,23 @@
       when:
         - install_type is undefined
 
+    - name: Remove /root/old-ansible-tower-aap-install/ if it exists and delete_old_files is defined.
+      ansible.builtin.shell: rm -rf /root/old-ansible-tower-aap-install/
+      when:
+        - delete_old_files is defined
+        - hostvars[item].install_dir.stat.exists
+      with_items:
+        - "{{ primary_node | default([]) }}"
+        - "{{ ah_node | default([]) }}"
+
+    - name: Move custom installer folder if it exists. Necessary if upgrading.
+      ansible.builtin.shell: mv /root/ansible-tower-aap-install/ /root/old-ansible-tower-aap-install/
+      when:
+        - hostvars[item].install_dir.stat.exists
+      with_items:
+        - "{{ primary_node | default([]) }}"
+        - "{{ ah_node | default([]) }}"
+
     - name: Download and unpack Tower tarball from the interwebs.
       ansible.builtin.unarchive:
         src: https://releases.ansible.com/ansible-tower/setup/ansible-tower-setup-{{ ver }}.tar.gz
@@ -137,11 +160,6 @@
         remote_src: yes
       when:
         - install_type == "tower" or install_type == "Tower"
-
-    - name: Move customer installer folder if it exists. Necessary if upgrading.
-      ansible.builtin.shell: mv /root/ansible-tower-aap-install/ /root/old-ansible-tower-aap-install/
-      when:
-        - install_dir.stat.exists
 
     - name: Rename Tower folders to maintain my sanity further along.
       ansible.builtin.shell: mv /root/ansible-tower-setup-{{ ver }}/ /root/ansible-tower-aap-install/
@@ -156,17 +174,17 @@
         dest: /root/
       when: 
         - install_type == "aap" or install_type == "AAP"
-        - '"2.2.0" not in ver'
+        - '"2.2." not in ver'
 
 # Version 2.2.0 seemed to introduce RHEL 8 and RHEL 9 specific bundles so I renamed them as such when I downloaded them.
 
-    - name: Copy AAP Install tarball specific to rhel version over to main node and unpack when version contains 2.2.0.
+    - name: Copy AAP Install tarball specific to rhel version over to main node and unpack when version contains "2.2.".
       ansible.builtin.unarchive:
         src: /mnt/aap/aap-bundles/ansible-automation-platform-setup-bundle-{{ ver }}-rhel{{ ansible_distribution_major_version }}.tar.gz
         dest: /root/
       when: 
         - install_type == "aap" or install_type == "AAP"
-        - '"2.2.0" in ver'
+        - '"2.2." in ver'
         - ansible_distribution_major_version == "8" or ansible_distribution_major_version == "9"
 
     - name: Rename AAP folders to maintain my sanity further along.
@@ -201,17 +219,45 @@
         insertafter: ^\[all\:vars\]
         line: required_ram=1
 
-    - name: Set admin_password variable to redhat in inventory file no matter what
+    - name: Set admin_password to ADMINPW environment variable if defined
+      ansible.builtin.set_fact:
+        admin_password: "{{ lookup('env','ADMINPW') }}"
+      when:
+        - admin_password is undefined
+        - lookup('env','ADMINPW') | length > 0
+
+    - name: Set admin_password to 'redhat' if not defined elsewhere
+      ansible.builtin.set_fact:
+        admin_password: redhat
+      when:
+        - admin_password is undefined
+        - lookup('env','ADMINPW') | length == 0
+
+    - name: Set pg_password to PGPW environment variable if defined
+      ansible.builtin.set_fact:
+        pg_password: "{{ lookup('env','PGPW') }}"
+      when:
+        - pg_password is undefined
+        - lookup('env','PGPW') | length > 0
+
+    - name: Set pg_password to 'redhat' if not defined elsewhere
+      ansible.builtin.set_fact:
+        pg_password: redhat
+      when:
+        - pg_password is undefined
+        - lookup('env','PGPW') | length == 0
+
+    - name: Set admin_password variable in inventory file no matter what
       ansible.builtin.lineinfile:
         path: /root/ansible-tower-aap-install/inventory
         regexp: ^admin_password=
-        line: admin_password='redhat'
+        line: admin_password='{{ admin_password }}'
 
-    - name: Set pg_password variable to redhat in inventory file no matter what
+    - name: Set pg_password variable in inventory file no matter what
       ansible.builtin.lineinfile:
         path: /root/ansible-tower-aap-install/inventory
         regexp: ^pg_password=
-        line: pg_password='redhat'
+        line: pg_password='{{ pg_password }}'
 
     - name: Remove localhost host entry if it exists.
       ansible.builtin.lineinfile:
@@ -516,21 +562,8 @@
       ansible.builtin.shell: ./setup.sh
       args:
         chdir: /root/ansible-tower-aap-install/
-
-    - name: Hit the API of the primary_node.
-      ansible.builtin.uri:
-        url: https://{{ primary_node }}/api/v2/ping/
-        method: GET
-        validate_certs: no
-      register: ping_output
-      when: 
-        - primary_node is defined
-
-    - name: Print API Output
-      ansible.builtin.debug:
-        var: ping_output.json
-      when: 
-        - primary_node is defined
+      when:
+        - debug_inventory is undefined
 
 # Setup yum.conf exclusions per https://access.redhat.com/solutions/4566711
 
@@ -545,6 +578,7 @@
       when:
         - '"2.2." in ver'
         - ansible_distribution_major_version == "9"
+        - debug_inventory is undefined
 
     - name: Setup yum.conf exclude list on RHEL 8 for AAP 2.2
       ansible.builtin.lineinfile:
@@ -554,6 +588,7 @@
       when:
         - '"2.2." in ver'
         - ansible_distribution_major_version == "8"
+        - debug_inventory is undefined
 
     - name: Setup yum.conf exclude list for AAP 2.1
       ansible.builtin.lineinfile:
@@ -562,6 +597,7 @@
         line: exclude=postgresql* nginx* redis* ansible ansible-builder ansible-core ansible-lint ansible-navigator ansible-runner ansible-test automation-controller automation-controller-cli automation-controller-server automation-controller-setup automation-controller-ui automation-controller-venv-tower automation-hub dumb-init helm helm-redistributable oniguruma oniguruma-devel openshift-clients openshift-clients-redistributable pulpcore-selinux python38-aiodns python38-aiofiles python38-aiohttp python38-aioredis python38-ansible-builder python38-ansible-runner python38-asgiref python38-asyncio-throttle python38-async-lru python38-async-timeout python38-attrs python38-azure-core python38-azure-storage-blob python38-backoff python38-bindep python38-bleach python38-bleach-allowlist python38-boto3 python38-botocore python38-bracex python38-certifi python38-click python38-colorama python38-commonmark python38-daemon python38-dataclasses python38-dateutil python38-defusedxml python38-diff-match-patch python38-distro python38-django python38-django-automated-logging python38-django-currentuser python38-django-filter python38-django-guardian python38-django-guid python38-django-import-export python38-django-ipware python38-django-lifecycle python38-django-picklefield python38-django-prometheus python38-djangorestframework python38-djangorestframework-queryfields python38-django-storages python38-docutils python38-drf-access-policy python38-drf-nested-routers python38-drf-spectacular python38-dynaconf python38-ecdsa python38-enrich python38-et-xmlfile python38-flake8 python38-future python38-galaxy-importer python38-galaxy-ng python38-gnupg python38-gunicorn python38-idna-ssl python38-importlib-metadata python38-importlib-resources python38-inflection python38-isodate python38-jmespath python38-jsonschema python38-lockfile python38-markdown python38-markuppy python38-marshmallow python38-mccabe python38-msrest python38-multidict python38-oauthlib python38-odfpy python38-onigurumacffi python38-openpyxl python38-packaging python38-parsley python38-pbr python38-pexpect python38-pip python38-pip-wheel python38-prometheus-client python38-psycopg2 python38-ptyprocess python38-pulp-ansible python38-pulp-container python38-pulpcore python38-pycares python38-pycodestyle python38-pycryptodomex python38-pyflakes python38-pygments python38-pygtrie python38-pyjwkest python38-pyjwt python38-pyOpenSSL python38-pyparsing python38-pyrsistent python38-python3-openid python38-redis python38-requests python38-requests-oauthlib python38-requirements-parser python38-resolvelib python38-rich python38-rq python38-ruamel-yaml python38-ruamel-yaml-clib python38-s3transfer python38-semantic-version python38-social-auth-app-django python38-social-auth-core python38-sqlparse python38-tablib python38-tenacity python38-typing-extensions python38-uritemplate python38-urlman python38-url-normalize python38-wcmatch python38-webencodings python38-whitenoise python38-xlrd python38-xlwt python38-yarl python38-zipp python3-meld3 python-meld3 receptor receptorctl rhc-catalog-worker sshpass supervisor tini
       when:
         - '"2.1." in ver'
+        - debug_inventory is undefined
 
     - name: Setup yum.conf exclude list for AAP 1.2 or Tower 3.8
       ansible.builtin.lineinfile:
@@ -571,6 +607,7 @@
       when:
         - '"1.2." in ver or "3.8." in ver'
         - ah_node is defined
+        - debug_inventory is undefined
 
     - name: Setup yum.conf exclude list for AAP 1.2 or Tower 3.8
       ansible.builtin.lineinfile:
@@ -580,5 +617,52 @@
       when:
         - '"1.2." in ver or "3.8." in ver'
         - primary_node is defined or secondary_node is defined or tertiary_node is defined
+        - debug_inventory is undefined
+
+- hosts: main
+  tasks:
+
+    - name: Hit the API of the primary_node.
+      ansible.builtin.uri:
+        url: https://{{ primary_node }}/api/v2/ping/
+        method: GET
+        validate_certs: no
+      register: ping_output
+      when: 
+        - primary_node is defined
+        - debug_inventory is undefined
+
+    - name: Create Authorization for ah_node
+      ansible.builtin.shell: echo -n "admin:{{ admin_password }}" | base64 -w0
+      register: ah_auth
+      when: 
+        - ah_node is defined
+        - debug_inventory is undefined
+
+    - name: Hit the API of the ah_node.
+      ansible.builtin.uri:
+        url: https://{{ ah_node }}/pulp/api/v3/workers/
+        method: GET
+        validate_certs: no
+        headers:
+          Authorization: Basic {{ ah_auth.stdout }} ## From https://stackoverflow.com/a/62968667
+      register: ping_output_ah
+      when: 
+        - ah_node is defined
+        - debug_inventory is undefined
+
+    - name: Print primary_node API Output
+      ansible.builtin.debug:
+        var: ping_output.json
+      when: 
+        - primary_node is defined
+        - debug_inventory is undefined
+  
+    - name: Print ah_node API Output
+      ansible.builtin.debug:
+        var: ping_output_ah.json
+      when: 
+        - ah_node is defined
+        - debug_inventory is undefined
 
 ...

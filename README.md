@@ -61,6 +61,24 @@ RHREGUN (RH Registry Username)
 
 RHREGPW (RH Registry Password)
 
+3. admin_password and pg_password variables. Extra or environment variables. If not set, defaults to "redhat".
+
+- Extra Vars:
+
+admin_password
+
+pg_password
+
+- Environment Vars:
+
+ADMINPW
+
+PGPW
+
+4. debug_inventory - Simply needs to be defined and can be any value. Will skip running setup.sh and all steps after (pinging API's) for inventory troubleshooting purposes.
+
+5. delete_old_files - When running successive runs with this playbook, this can be defined (to any value) to allow for the old renamed folder to be deleted if it exists on the main node.
+
 ## Example Install Scenarios:
 
 ### Single Node Tower v3.8.6-2:
