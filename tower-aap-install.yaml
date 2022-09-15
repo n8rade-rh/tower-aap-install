@@ -31,19 +31,6 @@
         - ah_node is defined
         - primary_node is undefined
 
-- hosts: main
-  tasks:
-
-    - name: Check for custom installer folder existence.
-      ansible.builtin.stat:
-        path: "/root/ansible-tower-aap-install/"
-      register: install_dir
-
-    - name: Check for old custom installer folder existence.
-      ansible.builtin.stat:
-        path: "/root/old-ansible-tower-aap-install/"
-      register: old_install_dir
-
 - hosts: setup
   tasks:
 
@@ -94,16 +81,11 @@
         - lookup('env','RHSUBUN') | length == 0
         - lookup('env','RHSUBPW') | length == 0
 
-    - name: When upgrading and custom install folder exists on main, comment out exclude entry in yum.conf on all nodes.
+    - name: Delete any exclude entries in yum.conf
       ansible.builtin.lineinfile:
         path: /etc/yum.conf
         regexp: ^exclude=
         state: absent
-      when:
-        - hostvars[item].install_dir.stat.exists
-      with_items:
-        - "{{ primary_node | default([]) }}"
-        - "{{ ah_node | default([]) }}"
 
 # Start the main inventory editing steps.
 
@@ -129,7 +111,7 @@
         - ver is version('1.2.0-1', '>=')
         - ver is version('3.3.0-1', '<=')
         - install_type is undefined
-
+    
     - name: Fail if install_type not set at this point.
       ansible.builtin.fail:
         msg: install_type was not able to be set automatically based on the provided version. Please check the version used or set it manually.
@@ -137,21 +119,14 @@
         - install_type is undefined
 
     - name: Remove /root/old-ansible-tower-aap-install/ if it exists and delete_old_files is defined.
-      ansible.builtin.shell: rm -rf /root/old-ansible-tower-aap-install/
+      ansible.builtin.shell: export OLD_INSTALL_DIR=/root/old-ansible-tower-aap-install/; [ -d $OLD_INSTALL_DIR ]; rm -rf $OLD_INSTALL_DIR
       when:
         - delete_old_files is defined
-        - hostvars[item].install_dir.stat.exists
-      with_items:
-        - "{{ primary_node | default([]) }}"
-        - "{{ ah_node | default([]) }}"
+      ignore_errors: yes
 
     - name: Move custom installer folder if it exists. Necessary if upgrading.
-      ansible.builtin.shell: mv /root/ansible-tower-aap-install/ /root/old-ansible-tower-aap-install/
-      when:
-        - hostvars[item].install_dir.stat.exists
-      with_items:
-        - "{{ primary_node | default([]) }}"
-        - "{{ ah_node | default([]) }}"
+      ansible.builtin.shell: export INSTALL_DIR=/root/ansible-tower-aap-install/; [ -d $INSTALL_DIR ]; mv $INSTALL_DIR /root/old-ansible-tower-aap-install/
+      ignore_errors: yes
 
     - name: Download and unpack Tower tarball from the interwebs.
       ansible.builtin.unarchive:
